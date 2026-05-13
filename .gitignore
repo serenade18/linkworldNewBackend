@@ -2,3 +2,12 @@
 media/
 db.sqlite3
 .idea/
+__pycache__/
+migrations/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.env

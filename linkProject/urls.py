@@ -7,6 +7,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 
 from linkApp.activation import ActivateAccountView
+from linkApp.password_reset import PasswordResetRequestView, PasswordResetConfirmView
 from linkApp.serializers import CustomTokenObtainPairView
 from linkApp.views import UserViewSet, UserInfoView, ChangePasswordView, KycViewSet
 from linkProject import settings
@@ -25,6 +26,8 @@ urlpatterns = [
     path('api/userinfo/', UserInfoView.as_view(), name='userinfo'),
     path('api/userinfo/change-password/', ChangePasswordView.as_view(), name="change-password"),
     path('api/activate/<str:uidb64>/<str:token>/', ActivateAccountView.as_view(), name='activate-account'),
+    path('api/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
+    path('api/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
 ]
 
 if settings.DEBUG:
