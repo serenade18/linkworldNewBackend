@@ -1,14 +1,14 @@
 """
 """
 from django.contrib import admin
-from django.template.context_processors import static
+from django.conf.urls.static import static
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 
 from linkApp.activation import ActivateAccountView
 from linkApp.serializers import CustomTokenObtainPairView
-from linkApp.views import UserViewSet, UserInfoView, ChangePasswordView
+from linkApp.views import UserViewSet, UserInfoView, ChangePasswordView, KycViewSet
 from linkProject import settings
 
 router = DefaultRouter()

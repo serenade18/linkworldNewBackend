@@ -35,7 +35,7 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
-    'sendgrid_backend',
+    # 'sendgrid_backend',
 ]
 
 MIDDLEWARE = [
@@ -103,7 +103,7 @@ DATABASES = {
 
 # Email backends
 
-EMAIL_BACKEND = 'honaApp.email_backends.SSLEmailBackend'
+EMAIL_BACKEND = 'linkApp.email_backends.SSLEmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 465
 EMAIL_HOST_USER = 'dev.shalompoultry@gmail.com'

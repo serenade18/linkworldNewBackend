@@ -110,6 +110,8 @@ class KycSubmission(models.Model):
     national_id = models.CharField(max_length=100, unique=True)
     date_of_birth = models.DateField(null=True, blank=True)
     address = models.TextField(blank=True)
+    # first save from full_name; the pro can edit it later.
+    slug = models.SlugField(max_length=64, unique=True, null=True, blank=True)
     vehicle_type = models.CharField(max_length=20, choices=Vehicle.choices)
     vehicle_make = models.CharField(max_length=100, blank=True)
     vehicle_model = models.CharField(max_length=100, blank=True)

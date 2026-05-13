@@ -145,7 +145,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
     user_type = serializers.ChoiceField(
         choices=User.UserTypes.choices,
         required=False,
-        default=User.UserTypes.PATIENT
+        default=User.UserTypes.DRIVER
     )
 
     class Meta:
@@ -182,7 +182,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             password=password,
             user_type=validated_data.get(
                 "user_type",
-                User.UserTypes.PATIENT
+                User.UserTypes.DRIVER
             )
         )
 
@@ -246,6 +246,7 @@ class KycSubmissionSerializer(serializers.ModelSerializer):
             "contact_phone",
             "national_id",
             "date_of_birth",
+            "slug",
             "address",
             "vehicle_type",
             "vehicle_type_display",
@@ -402,6 +403,7 @@ class KycProfileUpdateSerializer(serializers.ModelSerializer):
             "license_plate",
             "vehicle_photo",
             "profile_photo",
+            "slug",
             "insurance_doc",
             "status",
             "status_display",
