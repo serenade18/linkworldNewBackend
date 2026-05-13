@@ -366,3 +366,102 @@ class KycReviewSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class KycProfileUpdateSerializer(serializers.ModelSerializer):
+    """
+    Lets an approved driver update editable profile information
+    without re-uploading KYC credentials.
+
+    KYC approval status remains unchanged.
+    """
+
+    vehicle_type_display = serializers.CharField(
+        source="get_vehicle_type_display",
+        read_only=True
+    )
+
+    status_display = serializers.CharField(
+        source="get_status_display",
+        read_only=True
+    )
+
+    class Meta:
+        model = KycSubmission
+
+        fields = [
+            "full_name",
+            "contact_email",
+            "contact_phone",
+            "date_of_birth",
+            "address",
+            "vehicle_type",
+            "vehicle_type_display",
+            "vehicle_make",
+            "vehicle_model",
+            "vehicle_color",
+            "vehicle_year",
+            "license_plate",
+            "vehicle_photo",
+            "profile_photo",
+            "insurance_doc",
+            "status",
+            "status_display",
+        ]
+
+        read_only_fields = [
+            "status",
+            "status_display",
+        ]
+
+    def to_internal_value(self, data):
+        return super().to_internal_value(
+            _coerce_kyc_formdata(data)
+        )
+
+    def validate_license_plate(self, value):
+        value = value.strip().upper()
+
+        qs = KycSubmission.objects.filter(
+            license_plate=value
+        )
+
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError(
+                "This license plate is already registered."
+            )
+
+        return value
+
+    def validate_contact_email(self, value):
+        return value.strip().lower()
+
+    def validate_vehicle_year(self, value):
+        from datetime import datetime
+
+        current_year = datetime.now().year + 1
+
+        if value and (value < 1980 or value > current_year):
+            raise serializers.ValidationError(
+                f"Vehicle year must be between 1980 and {current_year}."
+            )
+
+        return value
+
+    def update(self, instance, validated_data):
+        """
+        Prevent modification if KYC is still pending review.
+        """
+
+        if instance.status == KycSubmission.Status.PENDING:
+            raise serializers.ValidationError(
+                "You cannot edit your profile while KYC review is pending."
+            )
+
+        # Preserve approved status
+        if instance.status == KycSubmission.Status.APPROVED:
+            validated_data.pop("status", None)
+
+        return super().update(instance, validated_data)
+

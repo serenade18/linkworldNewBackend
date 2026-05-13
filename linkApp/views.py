@@ -1,20 +1,26 @@
+import re
 from datetime import timezone
 
 from django.contrib.auth.hashers import make_password
+from django.db import transaction, IntegrityError
 from django.shortcuts import render, get_object_or_404
+from django.utils.text import slugify
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError, PermissionDenied
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from linkApp.emails import send_driver_kyc_pending_email, send_activation_email, send_account_admitted_email, \
-    send_account_suspended_email, send_account_unsuspended_email, send_account_banned_email
+    send_account_suspended_email, send_account_unsuspended_email, send_account_banned_email, send_kyc_rejected_email, \
+    send_kyc_approved_email
 from linkApp.jwt_utils import create_token_pair_for_user
 from linkApp.models import UserAccount, KycSubmission
 from linkApp.permissions import IsAdminRole, IsDriverRole
-from linkApp.serializers import UserSerializer, UserCreateSerializer
+from linkApp.serializers import UserSerializer, UserCreateSerializer, KycSubmissionSerializer, \
+    KycProfileUpdateSerializer, KycReviewSerializer
 
 
 # =============================================================================
@@ -286,3 +292,367 @@ class UserViewSet(viewsets.ViewSet):
         except Exception:
             pass
         return Response(UserSerializer(user).data)
+
+# -----------------------------------------------------------------------------
+# Reserved Slugs
+# -----------------------------------------------------------------------------
+
+RESERVED_SLUGS = {
+    "admin",
+    "api",
+    "login",
+    "signup",
+    "dashboard",
+    "driver",
+    "profile",
+    "karibu",
+    "activate",
+    "p",
+}
+
+# -----------------------------------------------------------------------------
+# Slug Generator
+# -----------------------------------------------------------------------------
+
+def _generate_unique_slug(base: str, exclude_pk=None) -> str:
+    """
+    Generate a unique public slug for driver profiles.
+    """
+
+    raw = slugify(base or "")[:60] or "driver"
+
+    candidate = raw
+    counter = 2
+
+    while True:
+        if candidate not in RESERVED_SLUGS:
+            qs = KycSubmission.objects.filter(slug=candidate)
+
+            if exclude_pk:
+                qs = qs.exclude(pk=exclude_pk)
+
+            if not qs.exists():
+                return candidate
+
+        candidate = f"{raw}-{counter}"
+        counter += 1
+
+
+# -----------------------------------------------------------------------------
+# KYC ViewSet
+# -----------------------------------------------------------------------------
+
+class KycViewSet(viewsets.ViewSet):
+    parser_classes = [
+        MultiPartParser,
+        FormParser,
+        JSONParser,
+    ]
+
+    def get_authenticators(self):
+        from linkApp.backends import AllowInactiveJWTAuthentication
+        from rest_framework.authentication import TokenAuthentication
+
+        # Allow inactive drivers to continue KYC onboarding
+        return [
+            AllowInactiveJWTAuthentication(),
+            TokenAuthentication(),
+        ]
+
+    def get_permissions(self):
+        if self.action in (
+            "list",
+            "retrieve",
+            "approve",
+            "reject",
+        ):
+            return [IsAuthenticated(), IsAdminRole()]
+
+        return [IsAuthenticated()]
+
+    # -------------------------------------------------------------------------
+    # List All KYC Submissions (Admin)
+    # -------------------------------------------------------------------------
+
+    def list(self, request):
+        qs = (
+            KycSubmission.objects
+            .select_related("user", "reviewed_by")
+            .order_by("-submitted_at")
+        )
+
+        status_filter = request.query_params.get("status")
+
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        serializer = KycSubmissionSerializer(
+            qs,
+            many=True,
+            context={"request": request},
+        )
+
+        return Response(serializer.data)
+
+    # -------------------------------------------------------------------------
+    # Retrieve Single Submission
+    # -------------------------------------------------------------------------
+
+    def retrieve(self, request, pk=None):
+        kyc = get_object_or_404(KycSubmission, pk=pk)
+
+        serializer = KycSubmissionSerializer(
+            kyc,
+            context={"request": request},
+        )
+
+        return Response(serializer.data)
+
+    # -------------------------------------------------------------------------
+    # Create / Update Driver KYC
+    # -------------------------------------------------------------------------
+
+    def create(self, request):
+        """
+        Create or update a driver's KYC submission.
+        """
+
+        if request.user.user_type != "driver":
+            raise PermissionDenied(
+                "Only drivers can submit KYC."
+            )
+
+        with transaction.atomic():
+
+            existing = (
+                KycSubmission.objects
+                .select_for_update()
+                .filter(user=request.user)
+                .first()
+            )
+
+            if (
+                existing and
+                existing.status == KycSubmission.Status.APPROVED
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            "Your KYC is already approved."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            partial = bool(existing)
+
+            serializer = KycSubmissionSerializer(
+                instance=existing,
+                data=request.data,
+                partial=partial,
+                context={"request": request},
+            )
+
+            serializer.is_valid(raise_exception=True)
+
+            try:
+                kyc = serializer.save(
+                    user=request.user,
+                    status=KycSubmission.Status.PENDING,
+                    reviewer_notes="",
+                    reviewed_by=None,
+                    reviewed_at=None,
+                )
+
+            except IntegrityError:
+
+                existing = (
+                    KycSubmission.objects
+                    .select_for_update()
+                    .get(user=request.user)
+                )
+
+                serializer = KycSubmissionSerializer(
+                    instance=existing,
+                    data=request.data,
+                    partial=True,
+                    context={"request": request},
+                )
+
+                serializer.is_valid(raise_exception=True)
+
+                kyc = serializer.save(
+                    user=request.user,
+                    status=KycSubmission.Status.PENDING,
+                )
+
+            # Generate public slug if missing
+            if not getattr(kyc, "slug", None):
+
+                base = (
+                    kyc.full_name
+                    or request.user.name
+                    or request.user.email.split("@")[0]
+                )
+
+                kyc.slug = _generate_unique_slug(
+                    base,
+                    exclude_pk=kyc.pk,
+                )
+
+                kyc.save(update_fields=["slug"])
+
+        return Response(
+            KycSubmissionSerializer(
+                kyc,
+                context={"request": request},
+            ).data,
+            status=(
+                status.HTTP_201_CREATED
+                if not existing
+                else status.HTTP_200_OK
+            ),
+        )
+
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
+    def me(self, request):
+        kyc = (
+            KycSubmission.objects
+            .filter(user=request.user)
+            .first()
+        )
+
+        if not kyc:
+            return Response(
+                {"detail": "No submission yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            KycSubmissionSerializer(
+                kyc,
+                context={"request": request},
+            ).data
+        )
+
+    @action(detail=False, methods=["patch", "put"], url_path="profile", permission_classes=[IsAuthenticated])
+    def profile(self, request):
+
+        if request.user.user_type != "driver":
+            raise PermissionDenied(
+                "Only drivers can edit their profile."
+            )
+
+        kyc = (
+            KycSubmission.objects
+            .filter(user=request.user)
+            .first()
+        )
+
+        if not kyc:
+            return Response(
+                {"detail": "Submit your KYC first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = KycProfileUpdateSerializer(
+            kyc,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        serializer.save()
+
+        return Response(
+            KycSubmissionSerializer(
+                kyc,
+                context={"request": request},
+            ).data
+        )
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+
+        kyc = get_object_or_404(
+            KycSubmission,
+            pk=pk,
+        )
+
+        review = KycReviewSerializer(
+            data=request.data
+        )
+
+        review.is_valid(raise_exception=True)
+
+        kyc.status = KycSubmission.Status.APPROVED
+        kyc.reviewer_notes = review.validated_data.get(
+            "notes",
+            "",
+        )
+
+        kyc.reviewed_by = request.user
+        kyc.reviewed_at = timezone.now()
+
+        kyc.save()
+
+        driver = kyc.user
+
+        if not driver.is_active:
+            driver.is_active = True
+            driver.save(update_fields=["is_active"])
+
+        send_kyc_approved_email(driver)
+
+        return Response(
+            KycSubmissionSerializer(
+                kyc,
+                context={"request": request},
+            ).data
+        )
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+
+        kyc = get_object_or_404(
+            KycSubmission,
+            pk=pk,
+        )
+
+        review = KycReviewSerializer(
+            data=request.data
+        )
+
+        review.is_valid(raise_exception=True)
+
+        kyc.status = KycSubmission.Status.REJECTED
+
+        kyc.reviewer_notes = review.validated_data.get(
+            "notes",
+            "",
+        )
+
+        kyc.reviewed_by = request.user
+        kyc.reviewed_at = timezone.now()
+
+        kyc.save()
+
+        driver = kyc.user
+
+        if driver.is_active:
+            driver.is_active = False
+            driver.save(update_fields=["is_active"])
+
+        send_kyc_rejected_email(
+            driver,
+            notes=kyc.reviewer_notes,
+        )
+
+        return Response(
+            KycSubmissionSerializer(
+                kyc,
+                context={"request": request},
+            ).data
+        )
