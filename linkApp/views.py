@@ -1,5 +1,5 @@
 import re
-from datetime import timezone
+from django.utils import timezone
 
 from django.contrib.auth.hashers import make_password
 from django.db import transaction, IntegrityError
